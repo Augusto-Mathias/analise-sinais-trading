@@ -1,7 +1,7 @@
 # app.py
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Dict, List, Tuple
 
 import pandas as pd
@@ -34,6 +34,47 @@ def sup_to_level(s: str) -> int:
 def load_json(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+def try_parse_iso_date(s):
+    """Tenta converter várias formas comuns de data para datetime.date.
+       Retorna None se não conseguir parsear."""
+    if not s:
+        return None
+    # já é date (mas não datetime)
+    if isinstance(s, date) and not isinstance(s, datetime):
+        return s
+    if isinstance(s, datetime):
+        return s.date()
+
+    s2 = str(s).strip()
+
+    # unix timestamp numérico (segundos ou milissegundos)
+    # tenta extrair somente dígitos contíguos (remove possíveis espaços)
+    digits = re.sub(r"\D", "", s2)
+    if digits and digits == s2:
+        try:
+            n = int(s2)
+            # detectar ms vs s (se maior que ~1e12 provavelmente ms)
+            if n > 1_000_000_000_000:
+                return datetime.fromtimestamp(n / 1000.0).date()
+            else:
+                return datetime.fromtimestamp(n).date()
+        except:
+            pass
+
+    # remover Z final e tentar ISO/formatos comuns
+    if s2.endswith("Z"):
+        s2 = s2[:-1]
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(s2, fmt).date()
+        except:
+            pass
+    try:
+        # tentativa final com fromisoformat
+        return datetime.fromisoformat(s2).date()
+    except:
+        return None
 
 def parse_signal_block(text: str) -> dict:
     res = {}
@@ -84,16 +125,14 @@ def extract_records(messages: List[dict]) -> Tuple[List[dict], Dict[Tuple[str,st
             payout = signals.get((pair, time), None)
 
             msg_date = None
-            if msg.get("date"):
-                try:
-                    msg_date = datetime.fromisoformat(msg["date"].replace("Z", ""))
-                except:
-                    msg_date = None
-            elif msg.get("message.date"):
-                try:
-                    msg_date = datetime.fromisoformat(msg["message.date"].replace("Z", ""))
-                except:
-                    msg_date = None
+            # tenta várias chaves para achar a data no próprio registro
+            for key in ("date", "message.date", "message.date_unixtime", "message.date_unixtime_str"):
+                if key in msg and msg.get(key) is not None:
+                    msg_date = try_parse_iso_date(msg.get(key))
+                    break
+            if msg_date is None:
+                # tenta extrair do texto se possível
+                msg_date = try_parse_iso_date(msg.get("text") or msg.get("message") or "")
 
             resolved.append({
                 "pair": pair,
@@ -204,12 +243,17 @@ def build_resumo_params_from_json(json_data: dict, stakes: List[float] = [2.0, 4
     # coletar datas como objetos date e contar dias (para projeção)
     dates = set()
     for m in messages:
-        d = m.get("date")
-        if d:
-            try:
-                dates.add(datetime.fromisoformat(d.replace("Z", "")).date())
-            except:
-                pass
+        # tenta chaves alternativas
+        candidate = None
+        for key in ("date", "message.date", "message.date_unixtime", "message.date_unixtime_str"):
+            if key in m and m.get(key) is not None:
+                candidate = try_parse_iso_date(m.get(key))
+                break
+        if candidate is None:
+            candidate = try_parse_iso_date(m.get("text") or m.get("message") or "")
+        if candidate:
+            dates.add(candidate)
+
     n_days = max(1, len(dates))
 
     # cálculo de projeções (mantido)
@@ -335,12 +379,19 @@ else:
 all_messages = data.get("messages", [])
 all_dates = []
 for m in all_messages:
-    d = m.get("date")
-    if d:
-        try:
-            all_dates.append(datetime.fromisoformat(d.replace("Z", "")).date())
-        except:
-            pass
+    # tenta várias chaves possíveis onde a data pode estar
+    for key in ("date", "message.date", "message.date_unixtime", "message.date_unixtime_str"):
+        if key in m and m.get(key) is not None:
+            d = try_parse_iso_date(m.get(key))
+            if d:
+                all_dates.append(d)
+            break
+    else:
+        # tenta extrair de texto livre (caso haja data embutida)
+        text_field = m.get("text") or m.get("message") or ""
+        d = try_parse_iso_date(text_field)
+        if d:
+            all_dates.append(d)
 
 if all_dates:
     min_date, max_date = min(all_dates), max(all_dates)
@@ -350,7 +401,7 @@ else:
 
 # Filtragem de mensagens por data (se houver datas válidas)
 if all_dates:
-    # Valores já definidos dentro da sidebar
+    # Valores já definidos dentro a sidebar (serão definidos lá)
     start_f = st.session_state.get("start_date", min_date)
     end_f = st.session_state.get("end_date", max_date)
     
@@ -359,17 +410,23 @@ if all_dates:
     if isinstance(end_f, datetime):
         end_f = end_f.date()
     
-    # filtra mensagens
+    # filtra mensagens de forma robusta usando try_parse_iso_date
     filtered_messages = []
     for m in all_messages:
-        d = m.get("date")
-        if d:
-            try:
-                m_date = datetime.fromisoformat(d.replace("Z", "")).date()
-            except:
-                continue
-            if start_f <= m_date <= end_f:
-                filtered_messages.append(m)
+        # tenta várias chaves onde a data pode estar
+        candidate = None
+        for key in ("date", "message.date", "message.date_unixtime", "message.date_unixtime_str"):
+            if key in m and m.get(key) is not None:
+                candidate = try_parse_iso_date(m.get(key))
+                break
+        if candidate is None:
+            # fallback: tenta extrair do texto
+            candidate = try_parse_iso_date(m.get("text") or m.get("message") or "")
+        if candidate is None:
+            # ignora mensagens sem data válida
+            continue
+        if start_f <= candidate <= end_f:
+            filtered_messages.append(m)
     data_filtrada = {"messages": filtered_messages}
 else:
     data_filtrada = data
@@ -740,6 +797,34 @@ with st.sidebar:
         Powered by Streamlit
     </div>
     """, unsafe_allow_html=True)
+
+# ---------------------------
+# Filtragem de mensagens pelo período selecionado (robusta)
+# ---------------------------
+start = st.session_state.get("start_date", min_date)
+end = st.session_state.get("end_date", max_date)
+if isinstance(start, datetime):
+    start = start.date()
+if isinstance(end, datetime):
+    end = end.date()
+if start > end:
+    start, end = end, start
+
+filtered_messages = []
+for m in all_messages:
+    candidate = None
+    for key in ("date", "message.date", "message.date_unixtime", "message.date_unixtime_str"):
+        if key in m and m.get(key) is not None:
+            candidate = try_parse_iso_date(m.get(key))
+            break
+    if candidate is None:
+        candidate = try_parse_iso_date(m.get("text") or m.get("message") or "")
+    if candidate is None:
+        continue
+    if start <= candidate <= end:
+        filtered_messages.append(m)
+
+data_filtrada = {"messages": filtered_messages}
 
 # Renderiza a página selecionada
 if pagina == "Resumo Executivo":
