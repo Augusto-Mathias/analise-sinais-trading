@@ -722,23 +722,34 @@ with st.sidebar:
     # Filtro de data movido para depois do menu
     st.markdown("---")
     st.markdown("### 📅 Filtro de Período")
-    
+
     if all_dates:
         # Botões de atalho
         col1, col2 = st.columns(2)
         with col1:
             if st.button("📅 7 dias", use_container_width=True):
-                st.session_state.start_date = max_date - timedelta(days=6)
-                st.session_state.end_date = max_date
+                st.session_state["start_date"] = max_date - timedelta(days=6)
+                st.session_state["end_date"] = max_date
         with col2:
             if st.button("📅 15 dias", use_container_width=True):
-                st.session_state.start_date = max_date - timedelta(days=14)
-                st.session_state.end_date = max_date
+                st.session_state["start_date"] = max_date - timedelta(days=14)
+                st.session_state["end_date"] = max_date
 
-        # Date inputs
+        # Valores iniciais vindos do session_state (ou fallbacks)
         initial_start = st.session_state.get("start_date", min_date)
         initial_end = st.session_state.get("end_date", max_date)
 
+        # Normalizar tipos (garantir datetime.date)
+        if isinstance(initial_start, datetime):
+            initial_start = initial_start.date()
+        if isinstance(initial_end, datetime):
+            initial_end = initial_end.date()
+        if not isinstance(initial_start, date):
+            initial_start = min_date
+        if not isinstance(initial_end, date):
+            initial_end = max_date
+
+        # Date inputs (com chave para manter no session_state)
         start_f = st.date_input(
             "Data início",
             value=initial_start,
@@ -756,14 +767,21 @@ with st.sidebar:
             format="DD/MM/YYYY"
         )
 
+        # Converter para date caso o widget retorne datetime
         if isinstance(start_f, datetime):
             start_f = start_f.date()
+            st.session_state["start_date"] = start_f
         if isinstance(end_f, datetime):
             end_f = end_f.date()
+            st.session_state["end_date"] = end_f
 
+        # Garantir ordem correta e atualizar session_state se trocou
         if start_f > end_f:
             start_f, end_f = end_f, start_f
+            st.session_state["start_date"] = start_f
+            st.session_state["end_date"] = end_f
 
+        # Exibir período selecionado
         st.markdown(f"""
         <div style="background: #f0f2f6; border-radius: 8px; padding: 10px; margin-top: 10px; text-align: center;">
             <div style="font-size: 11px; color: #666; margin-bottom: 4px;">Período selecionado</div>
@@ -772,6 +790,8 @@ with st.sidebar:
             </div>
         </div>
         """, unsafe_allow_html=True)
+    else:
+        st.info("Nenhuma data válida encontrada no arquivo. Carregue um result.json com datas para habilitar o filtro.")
     
     # Info box estilizado
     st.markdown("---")
