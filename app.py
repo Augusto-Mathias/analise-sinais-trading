@@ -724,6 +724,12 @@ with st.sidebar:
     st.markdown("### 📅 Filtro de Período")
 
     if all_dates:
+        # Função de segurança para evitar erro de data fora do intervalo
+        def clamp_date(d, min_d, max_d):
+            if d < min_d: return min_d
+            if d > max_d: return max_d
+            return d
+
         # Botões de atalho
         col1, col2 = st.columns(2)
         with col1:
@@ -740,14 +746,15 @@ with st.sidebar:
         initial_end = st.session_state.get("end_date", max_date)
 
         # Normalizar tipos (garantir datetime.date)
-        if isinstance(initial_start, datetime):
-            initial_start = initial_start.date()
-        if isinstance(initial_end, datetime):
-            initial_end = initial_end.date()
-        if not isinstance(initial_start, date):
-            initial_start = min_date
-        if not isinstance(initial_end, date):
-            initial_end = max_date
+        if isinstance(initial_start, datetime): initial_start = initial_start.date()
+        if isinstance(initial_end, datetime): initial_end = initial_end.date()
+        
+        if not isinstance(initial_start, date): initial_start = min_date
+        if not isinstance(initial_end, date): initial_end = max_date
+
+        # --- SEGURANÇA: Ajustar para ficar dentro do intervalo permitido pelo arquivo atual ---
+        initial_start = clamp_date(initial_start, min_date, max_date)
+        initial_end = clamp_date(initial_end, min_date, max_date)
 
         # Date inputs (com chave para manter no session_state)
         start_f = st.date_input(
@@ -768,18 +775,12 @@ with st.sidebar:
         )
 
         # Converter para date caso o widget retorne datetime
-        if isinstance(start_f, datetime):
-            start_f = start_f.date()
-            st.session_state["start_date"] = start_f
-        if isinstance(end_f, datetime):
-            end_f = end_f.date()
-            st.session_state["end_date"] = end_f
+        if isinstance(start_f, datetime): start_f = start_f.date()
+        if isinstance(end_f, datetime): end_f = end_f.date()
 
-        # Garantir ordem correta e atualizar session_state se trocou
+        # Garantir ordem correta
         if start_f > end_f:
             start_f, end_f = end_f, start_f
-            st.session_state["start_date"] = start_f
-            st.session_state["end_date"] = end_f
 
         # Exibir período selecionado
         st.markdown(f"""
@@ -791,7 +792,7 @@ with st.sidebar:
         </div>
         """, unsafe_allow_html=True)
     else:
-        st.info("Nenhuma data válida encontrada no arquivo. Carregue um result.json com datas para habilitar o filtro.")
+        st.info("Nenhuma data válida encontrada no arquivo.")
     
     # Info box estilizado
     st.markdown("---")
